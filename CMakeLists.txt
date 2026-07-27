@@ -11,10 +11,11 @@ add_executable(CursorSyncKeeper WIN32
     src/CursorFixer.cpp
 )
 
-# user32  : window / message pump / SystemParametersInfo
-# kernel32: GetModuleFileName / registry helpers
-# advapi32: RegOpenKeyEx / RegSetValueEx / RegQueryValueEx
-target_link_libraries(CursorSyncKeeper user32 kernel32 advapi32)
+# user32  : window / message pump / SystemParametersInfo / SendInput
+# kernel32: GetModuleFileName / registry helpers / CreateProcess
+# advapi32: RegOpenKeyEx / RegSetValueEx (HKLM write) / CheckTokenMembership
+# shell32 : ShellExecuteEx (UAC elevation)
+target_link_libraries(CursorSyncKeeper user32 kernel32 advapi32 shell32)
 
 if(MSVC)
     # Smaller, release-optimized binary; strip unnecessary stuff

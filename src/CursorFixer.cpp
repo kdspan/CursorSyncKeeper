@@ -1,58 +1,83 @@
 #include "CursorFixer.h"
 #include <windows.h>
-#include <cstdlib>
 
 namespace {
 
-// Read the persisted mouse-trail value (0 = off, 1-7 = number of trail images)
-// from HKCU\Control Panel\Mouse\MouseTrails.
-int ReadTrailsFromRegistry() {
-    int trails = 0;
-    HKEY hKey = nullptr;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\Mouse", 0,
-                       KEY_READ, &hKey) == ERROR_SUCCESS) {
-        wchar_t buf[16] = {0};
-        DWORD size = sizeof(buf);
-        DWORD type = 0;
-        if (RegQueryValueExW(hKey, L"MouseTrails", nullptr, &type,
-                             reinterpret_cast<LPBYTE>(buf), &size) == ERROR_SUCCESS &&
-            type == REG_SZ) {
-            trails = static_cast<int>(wcstol(buf, nullptr, 10));
-        }
-        RegCloseKey(hKey);
-    }
-    if (trails < 0) trails = 0;
-    if (trails > 7) trails = 7;
-    return trails;
-}
+const wchar_t* kDwmKey = L"SOFTWARE\\Microsoft\\Windows\\DWM";
+const wchar_t* kOverlayValue = L"OverlayTestMode";
+const DWORD    kOverlayTestMode = 5;   // disable MPO -> force software cursor
 
 } // namespace
 
+bool CursorFixer::EnableSoftwareMouseRegistry() {
+    HKEY hKey = nullptr;
+    DWORD disp = 0;
+    LONG res = RegCreateKeyExW(HKEY_LOCAL_MACHINE, kDwmKey, 0, nullptr,
+                               REG_OPTION_NON_VOLATILE, KEY_SET_VALUE,
+                               nullptr, &hKey, &disp);
+    if (res != ERROR_SUCCESS) return false;
+    res = RegSetValueExW(hKey, kOverlayValue, 0, REG_DWORD,
+                         reinterpret_cast<const BYTE*>(&kOverlayTestMode),
+                         sizeof(kOverlayTestMode));
+    RegCloseKey(hKey);
+    return res == ERROR_SUCCESS;
+}
+
+void CursorFixer::DisableSoftwareMouseRegistry() {
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, kDwmKey, 0, KEY_SET_VALUE, &hKey)
+            == ERROR_SUCCESS) {
+        RegDeleteValueW(hKey, kOverlayValue);
+        RegCloseKey(hKey);
+    }
+}
+
+void CursorFixer::ResetGraphicsDriver() {
+    // Replicate Win+Ctrl+Shift+B to restart the graphics driver. This makes
+    // the driver re-read OverlayTestMode and drop the hardware cursor without
+    // a reboot. SendInput only works from an interactive session.
+    INPUT inputs[8] = {};
+    int n = 0;
+    auto key = [&](WORD vk, bool down) {
+        inputs[n].type = INPUT_KEYBOARD;
+        inputs[n].ki.wVk = vk;
+        inputs[n].ki.wScan = 0;
+        inputs[n].ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+        inputs[n].ki.time = 0;
+        inputs[n].ki.dwExtraInfo = 0;
+        ++n;
+    };
+    key(VK_LWIN,   true);
+    key(VK_CONTROL, true);
+    key(VK_SHIFT,  true);
+    key('B',       true);
+    key('B',       false);
+    key(VK_SHIFT,  false);
+    key(VK_CONTROL, false);
+    key(VK_LWIN,   false);
+    SendInput(static_cast<UINT>(n), inputs, sizeof(INPUT));
+}
+
 void CursorFixer::Apply() {
-    const int trails = ReadTrailsFromRegistry();
+    // 1) Ensure software mouse is enabled at the driver level.
+    EnableSoftwareMouseRegistry();
 
-    // Writing the *same* value back is a no-op: the system detects "no change"
-    // and does NOT re-apply the setting, so the broken (lost) visual state
-    // persists even though the registry value is correct.
-    //
-    // To make the system actually RE-READ and RE-APPLY, we must force a real
-    // state transition: switch to a different value, then switch back.
-    const UINT toggle = (trails == 0) ? 1 : 0;   // guaranteed != target
-
-    // 1) Force a state change (target <-> opposite). This tears down and
-    //    rebuilds the cursor-trail rendering pipeline inside the kernel,
-    //    which is what was lost when the display driver reset the context.
+    // 2) Force a real state transition on the mouse-trail setting so the
+    //    system re-reads and re-applies it (writing the same value is a
+    //    no-op and would NOT restore the lost visual state).
+    UINT cur = 0;
+    SystemParametersInfoW(SPI_GETMOUSETRAILS, 0, &cur, 0);
+    const UINT toggle = (cur == 0) ? 1 : 0;
     SystemParametersInfoW(SPI_SETMOUSETRAILS, toggle, nullptr, SPIF_SENDCHANGE);
 
-    // 2) Re-apply the user's real setting. SPIF_UPDATEINIFILE persists it
-    //    back to the registry (in case the driver wiped it) and
-    //    SPIF_SENDCHANGE broadcasts WM_SETTINGCHANGE so every application
-    //    re-reads the new value.
-    SystemParametersInfoW(SPI_SETMOUSETRAILS, static_cast<UINT>(trails),
-                          nullptr, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+    // 3) Reset the GPU driver so OverlayTestMode takes effect immediately
+    //    (this is the part that previously required a reboot).
+    ResetGraphicsDriver();
 
-    // 3) Make the system reload the cursor scheme from the registry
-    //    (Control Panel\Cursors) so the whole mouse configuration is
-    //    re-read and applied end-to-end, not just the trail flag.
+    // 4) Restore the user's real trail preference and persist + broadcast it.
+    SystemParametersInfoW(SPI_SETMOUSETRAILS, cur, nullptr,
+                          SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+
+    // 5) Reload the whole cursor scheme from the registry end-to-end.
     SystemParametersInfoW(SPI_SETCURSORS, 0, nullptr, SPIF_SENDCHANGE);
 }
