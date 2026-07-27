@@ -1,0 +1,22 @@
+#include <winres.h>
+#include "resource.h"
+
+// Application icon embedded into the executable (Explorer / taskbar).
+IDI_APP_ICON ICON "appicon.ico"
+
+// NOTE: rc.exe is ANSI-only and cannot handle the UTF-8 Chinese UI strings, so
+// every visible label is set from C++ (Panel.cpp) at runtime. The English
+// strings below are just placeholders that get overwritten immediately.
+
+IDD_PANEL DIALOGEX 12, 12, 400, 300
+STYLE DS_MODALFRAME | WS_CAPTION | WS_SYSMENU | WS_POPUP
+CAPTION "CursorSyncKeeper Control Panel"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "", IDC_P_TITLE,     16, 14, 368, 22
+    LTEXT           "", IDC_P_INFO,      16, 44, 368, 80
+    PUSHBUTTON      "Fix Now",  IDC_P_FIX,       16, 150, 176, 40
+    PUSHBUTTON      "Uninstall", IDC_P_UNINSTALL, 208, 150, 176, 40
+    PUSHBUTTON      "Exit",     IDC_P_EXIT,      150, 200, 100, 30
+    LTEXT           "", IDC_P_STATUS,    16, 244, 368, 44
+END

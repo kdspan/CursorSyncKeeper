@@ -1,11 +1,26 @@
 #pragma once
 
-#define IDD_SETUP_DIALOG   100
-#define IDC_TITLE          101
-#define IDC_BTN_INSTALL    102
-#define IDC_BTN_REINSTALL  103
-#define IDC_BTN_UNINSTALL  104
-#define IDC_BTN_EXIT       105
-#define IDC_STATUS         106
-#define IDC_HINT           107
-#define IDC_BTN_FIX        108
+// ---- Shared application icon (embedded into all three programs) ----
+#define IDI_APP_ICON     100
+
+// ---- Wizard installer (CursorSyncKeeper_Setup.exe) ----
+#define IDD_WIZARD       200
+#define IDC_WIZ_TITLE    201
+#define IDC_W0_TEXT      202
+#define IDC_W1_PROMPT    203
+#define IDC_PATH         204
+#define IDC_BROWSE       205
+#define IDC_W2_TEXT      206
+#define IDC_W3_TEXT      207
+#define IDC_BACK         208
+#define IDC_NEXT         209
+#define IDC_CANCEL       210
+
+// ---- Control panel (CursorSyncKeeperPanel.exe) ----
+#define IDD_PANEL        300
+#define IDC_P_TITLE      301
+#define IDC_P_INFO       302
+#define IDC_P_FIX        303
+#define IDC_P_UNINSTALL  304
+#define IDC_P_EXIT       305
+#define IDC_P_STATUS     306

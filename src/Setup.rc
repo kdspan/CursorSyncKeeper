@@ -1,23 +1,26 @@
 #include <winres.h>
 #include "resource.h"
 
-// NOTE: the requireAdministrator manifest is embedded by CMake via mt.exe in a
-// post-build step (not here), because CMake's default asInvoker manifest would
-// otherwise silently override a manifest placed in this .rc.
+// Application icon embedded into the executable (Explorer / taskbar).
+IDI_APP_ICON ICON "appicon.ico"
 
-// All visible text is set from C++ (Setup.cpp) at runtime, because rc.exe
-// only parses ANSI and cannot handle the UTF-8 Chinese UI strings.
-IDD_SETUP_DIALOG DIALOGEX 12, 12, 400, 280
+// NOTE: rc.exe is ANSI-only and cannot handle the UTF-8 Chinese UI strings, so
+// every visible label is set from C++ (Setup.cpp) at runtime. The English
+// strings below are just placeholders that get overwritten immediately.
+
+IDD_WIZARD DIALOGEX 12, 12, 460, 340
 STYLE DS_MODALFRAME | WS_CAPTION | WS_SYSMENU | WS_POPUP
 CAPTION "CursorSyncKeeper Setup"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT           "", IDC_TITLE, 14, 14, 372, 22
-    LTEXT           "", IDC_HINT, 14, 40, 372, 36
-    PUSHBUTTON      "Install",   IDC_BTN_INSTALL,   24, 92, 104, 34
-    PUSHBUTTON      "Reinstall", IDC_BTN_REINSTALL, 148, 92, 104, 34
-    PUSHBUTTON      "Uninstall", IDC_BTN_UNINSTALL, 272, 92, 104, 34
-    PUSHBUTTON      "Fix Now",   IDC_BTN_FIX,       148, 138, 104, 34
-    LTEXT           "", IDC_STATUS, 14, 186, 372, 56
-    DEFPUSHBUTTON   "Exit", IDC_BTN_EXIT, 160, 244, 80, 28
+    LTEXT           "", IDC_WIZ_TITLE, 16, 14, 428, 20
+    LTEXT           "", IDC_W0_TEXT,   16, 44, 428, 220
+    LTEXT           "", IDC_W1_PROMPT, 16, 50, 428, 20
+    EDITTEXT        IDC_PATH,          16, 76, 360, 24, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse", IDC_BROWSE, 388, 76, 56, 24
+    LTEXT           "", IDC_W2_TEXT,   16, 44, 428, 220
+    LTEXT           "", IDC_W3_TEXT,   16, 44, 428, 220
+    PUSHBUTTON      "Cancel", IDC_CANCEL, 16,  300, 80, 30
+    PUSHBUTTON      "Back",   IDC_BACK,   300, 300, 72, 30
+    DEFPUSHBUTTON   "Next",   IDC_NEXT,   380, 300, 72, 30
 END

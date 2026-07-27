@@ -28,6 +28,13 @@ bool HiddenWindow::Create() {
         nullptr, nullptr, wc.hInstance, nullptr
     );
 
+    if (m_hWnd) {
+        // Associate this instance so WndProc can reach the debounce state.
+        SetWindowLongPtrW(m_hWnd, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(this));
+        m_lastApplyTick = GetTickCount();
+    }
+
     return (m_hWnd != nullptr);
 }
 
@@ -46,14 +53,27 @@ void HiddenWindow::Destroy() {
 
 // ===================== Pure event-driven, no polling =====================
 LRESULT CALLBACK HiddenWindow::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    HiddenWindow* self =
+        reinterpret_cast<HiddenWindow*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+
     switch (msg) {
         // --- Triggers: anything that can reset the display/GPU context ---
         case WM_DISPLAYCHANGE:    // resolution / orientation / monitor hot-plug (game exit)
         case WM_DEVICECHANGE:     // GPU / display driver reset
         case WM_POWERBROADCAST:   // wake from sleep (PBT_APMRESUME*)
-            // The driver is still resetting the context right now.
-            // Schedule a single delayed fix instead of blocking the pump.
-            SetTimer(hWnd, TIMER_ID_FIX, FIX_DELAY_MS, nullptr);
+            // IMPORTANT: Our own fix calls ResetGraphicsDriver(), which resets
+            // the GPU driver and broadcasts WM_DISPLAYCHANGE back to us. If we
+            // re-armed the timer on that, the fix would trigger itself forever
+            // (endless screen flashes). So only react to triggers that arrive
+            // after COOLDOWN_MS has elapsed since the last fix -- those are
+            // genuine external changes, not our own aftershock.
+            if (self) {
+                DWORD now = GetTickCount();
+                if (static_cast<LONG>(now - self->m_lastApplyTick)
+                        >= static_cast<LONG>(COOLDOWN_MS)) {
+                    SetTimer(hWnd, TIMER_ID_FIX, FIX_DELAY_MS, nullptr);
+                }
+            }
             return 0;
 
         case WM_TIMER:
@@ -61,6 +81,9 @@ LRESULT CALLBACK HiddenWindow::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                 KillTimer(hWnd, TIMER_ID_FIX);
                 // Re-assert the user's mouse-trail setting after the reset.
                 CursorFixer::Apply();
+                // Refresh the cooldown now, so the WM_DISPLAYCHANGE aftershock
+                // that Apply() just caused is suppressed (breaks the loop).
+                if (self) self->m_lastApplyTick = GetTickCount();
             }
             return 0;
 
@@ -69,4 +92,8 @@ LRESULT CALLBACK HiddenWindow::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             return 0;
     }
     return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+void HiddenWindow::MarkApplied() {
+    m_lastApplyTick = GetTickCount();
 }

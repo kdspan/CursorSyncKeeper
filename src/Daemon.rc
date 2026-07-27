@@ -1,0 +1,6 @@
+#include "resource.h"
+
+// Application icon embedded into the daemon executable. The daemon itself has
+// no dialog, so this only supplies the Explorer / taskbar icon. All privileged
+// install / uninstall work lives elsewhere (AdminOps); this is purely cosmetic.
+IDI_APP_ICON ICON "appicon.ico"

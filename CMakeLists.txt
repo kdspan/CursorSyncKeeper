@@ -4,11 +4,21 @@ project(CursorSyncKeeper)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Copy the application icon next to the build dir so rc.exe (which runs from
+# the build directory) can resolve the "appicon.ico" referenced by the .rc
+# resource files.
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/src/appicon.ico
+               ${CMAKE_CURRENT_BINARY_DIR}/appicon.ico COPYONLY)
+
 # WIN32: build a GUI subsystem executable (no console window)
+# The daemon is lightweight: it only does the runtime fix + event monitoring.
+# It links ONLY CursorFixer (for Apply) -- NO AdminOps, so it contains no
+# install / uninstall / registry / scheduled-task logic.
 add_executable(CursorSyncKeeper WIN32
     src/main.cpp
     src/HiddenWindow.cpp
     src/CursorFixer.cpp
+    src/Daemon.rc
 )
 
 # user32  : window / message pump / SystemParametersInfo / SendInput
@@ -17,21 +27,35 @@ add_executable(CursorSyncKeeper WIN32
 # shell32 : ShellExecuteEx (UAC elevation) / SHGetFolderPath
 target_link_libraries(CursorSyncKeeper user32 kernel32 advapi32 shell32)
 
-# Installer package (install / reinstall / uninstall GUI + ARP entry).
+# Installer wizard (install / reinstall, selectable location). It owns the
+# install-time privileged work -- writing HKLM + registering the scheduled
+# task -- via the shared AdminOps module, and links CursorFixer to persist the
+# software-mouse registry value.
 # Listing setup.manifest as a source makes CMake embed it (via mt.exe) as the
 # ONLY manifest, so it is not silently replaced by CMake's default asInvoker
 # manifest (which previously broke every privileged write with ACCESS_DENIED).
 add_executable(CursorSyncKeeper_Setup WIN32
     src/Setup.cpp
+    src/AdminOps.cpp
     src/Setup.rc
     src/setup.manifest
+    src/CursorFixer.cpp
 )
-target_link_libraries(CursorSyncKeeper_Setup user32 kernel32 advapi32 shell32)
-
-# Stop the linker from emitting its own default asInvoker manifest; we supply
-# the only manifest (setup.manifest, requireAdministrator) via the .manifest
-# source above.
+target_link_libraries(CursorSyncKeeper_Setup user32 kernel32 advapi32 shell32 ole32)
 target_link_options(CursorSyncKeeper_Setup PRIVATE /MANIFEST:NO)
+
+# Control Panel program: single fix + uninstall (a separate program from both
+# the daemon and the installer wizard). It also uses AdminOps for teardown and
+# CursorFixer for the one-shot fix, and embeds a requireAdministrator manifest.
+add_executable(CursorSyncKeeperPanel WIN32
+    src/Panel.cpp
+    src/AdminOps.cpp
+    src/Panel.rc
+    src/panel.manifest
+    src/CursorFixer.cpp
+)
+target_link_libraries(CursorSyncKeeperPanel user32 kernel32 advapi32 shell32 ole32)
+target_link_options(CursorSyncKeeperPanel PRIVATE /MANIFEST:NO)
 
 if(MSVC)
     # Source files contain Chinese UI strings -> compile as UTF-8.

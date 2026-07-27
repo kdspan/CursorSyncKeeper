@@ -44,37 +44,59 @@ cmake --build . --config Release
 
 产物：`build\CursorSyncKeeper.exe`（无外部依赖）。
 
-## 安装包（推荐，需管理员）
+## 安装包（安装向导，需管理员）
 
-`CursorSyncKeeper_Setup.exe` 是图形化安装程序，提供 **安装 / 重装 / 卸载**
-三个操作，并带有 **立即修复** 按钮：
+`CursorSyncKeeper_Setup.exe` 是一个**安装向导**：欢迎 → 选择安装位置 → 确认
+→ 完成。可执行**安装**（首次）或**重装**（已存在时刷新并重新注册）。
 
-- **安装**：复制文件到 `Program Files\CursorSyncKeeper`，写入 `HKLM` 禁用 MPO，
-  注册登录自启计划任务，启动守护进程，并**立即执行一次修复**（见下）。
-- **重装**：停止守护进程、刷新程序文件、重新注册并**再执行一次修复**。
-- **卸载**：移除计划任务、`HKLM` 项、程序文件与“添加/删除程序”条目。
-- **立即修复**：随时手动触发一次软件鼠标修复（无需重装）。
+- **安装 / 重装**：复制文件到所选目录（默认 `Program Files\CursorSyncKeeper`，
+  可自定义），**写入 `HKLM` 禁用 MPO（由安装向导自身完成）**，**注册登录自启
+  计划任务（由安装向导自身完成）**，启动守护进程，并**立即执行一次修复**
+  （约 1 秒屏幕黑闪，属正常）。
+- 安装后的软件由两个独立程序组成：
+  - **守护进程** `CursorSyncKeeper.exe`：精简的纯事件驱动监控器，只负责运行时
+    修复与监听显示变化事件；**不包含**任何安装 / 卸载 / 写注册表 / 注册计划任务的
+    代码（这些均由下方两个程序负责）。
+  - **控制面板** `CursorSyncKeeperPanel.exe`：用于**单次修复**或**卸载**（卸载不
+    执行修复，不黑屏）。
 
-> 安装包自带 `requireAdministrator` 清单，始终以管理员运行，故安装/卸载过程
+> 写 `HKLM` / 注册计划任务 / 删除 `Program Files` 这类提权操作集中在安装向导与
+> 控制面板共用的 `AdminOps` 模块中；守护进程本身不链接该模块，保持轻量。
+
+> 安装向导自带 `requireAdministrator` 清单，始终以管理员运行，故安装过程
 > 不会重复弹 UAC。
 
-## 命令行（守护进程本体，需管理员）
+## 命令行
+
+守护进程本体（`CursorSyncKeeper.exe`）：
+
+- 不带参数运行即为后台事件驱动的修复监控器（由安装向导或登录计划任务以
+  管理员权限启动），本身**不提供** `/install`、`/uninstall`、`/fix` 等命令。
+- 运行时修复（含写 `HKLM\DWM\OverlayTestMode`）是修复功能本身的一部分，仍由
+  `CursorFixer` 完成。
+
+安装向导（`CursorSyncKeeper_Setup.exe`，需管理员）：
 
 ```bat
-CursorSyncKeeper.exe /install     :: 禁用 MPO + 注册计划任务 + 启动守护进程
-CursorSyncKeeper.exe /uninstall   :: 删除计划任务 + 移除 HKLM 项
-CursorSyncKeeper.exe /fix         :: 单次执行软件鼠标修复后退出（不驻留）
+CursorSyncKeeper_Setup.exe           :: 打开安装向导（安装 / 重装，可选位置）
 ```
 
-> 安装/卸载/修复会请求 UAC 提权（写 `HKLM` 必须管理员）。非管理员运行时程序会
-> 自动以 `runas` 重新启动并弹出 UAC 提示。
+控制面板（`CursorSyncKeeperPanel.exe`，需管理员）：
 
-## 安装后自动修复
+```bat
+CursorSyncKeeperPanel.exe           :: 打开控制面板（单次修复 / 卸载）
+CursorSyncKeeperPanel.exe /uninstall :: 静默卸载（供“程序和功能”调用）
+```
 
-每次 **安装 / 重装** 完成后，安装程序都会自动调用一次 `CursorSyncKeeper.exe /fix`，
-在无需等待任何事件的前提下，立即把系统切回软件鼠标（含一次显卡驱动重置，约 1 秒
-屏幕黑闪属正常）。守护进程启动后也会在首次运行时修复一次，并对后续显示变化事件
-持续守护。
+> 写 `HKLM` / `Program Files` 需管理员权限。非管理员运行时程序会自动以 `runas`
+> 重新启动并弹出 UAC 提示。
+
+## 控制面板与卸载
+
+- **单次修复**：立即执行一次软件鼠标修复（约 1 秒屏幕黑闪，属正常）。
+- **卸载**：停止守护进程、移除登录自启计划任务、移除 `HKLM` 注册表项、删除程序
+  文件与日志。**卸载过程不执行修复，因此不会出现屏幕黑闪。**
+- “程序和功能”中的 `CursorSyncKeeper` 项会启动控制面板（或静默 `/uninstall`）。
 
 ## 验证
 
