@@ -32,11 +32,24 @@ private:
     bool CooldownElapsed() const;
 
     // Called when the delay timer fires (jitter has settled). Compares the
-    // CURRENT monitor device-name set against the snapshot; returns true (and
-    // updates the snapshot) only on a real monitor add/remove. A mobile-HDD
-    // plug/unplug whose GPU jitter has already settled compares equal here and
-    // is silently dropped -- zero screen flash.
+    // CURRENT full topology (device names + geometry + primary flag) against
+    // the snapshot; returns true (and updates the snapshot) only on a
+    // persistent change: game-exit resolution switch or monitor add/remove.
+    // A mobile-HDD plug/unplug whose transient GPU jitter has already settled
+    // compares equal here and is silently dropped -- zero screen flash.
     bool ShouldApplyNow();
+
+    // Sentinel verification for BORDERLESS / windowed games, which never
+    // change the display mode (no WM_DISPLAYCHANGE) yet still reset the mouse
+    // setting back to the hardware path. If MouseTrails != -1 and no
+    // fullscreen app currently owns the foreground, cheaply re-asserts the
+    // software cursor (no GPU reset -> zero screen flash).
+    static void VerifyCursorSentinel();
+
+    // Out-of-context WinEvent callback: any foreground-window switch (game
+    // launch/exit/alt-tab) schedules a sentinel verification.
+    static void CALLBACK WinEventProc(HWINEVENTHOOK, DWORD event, HWND,
+                                      LONG, LONG, DWORD, DWORD);
 
     HWND m_hWnd = nullptr;
 
@@ -47,14 +60,20 @@ private:
     HDEVNOTIFY m_hDevNotify = nullptr;         // GUID_DEVINTERFACE_MONITOR
     HDEVNOTIFY m_hDevNotifyAdapter = nullptr;  // GUID_DEVINTERFACE_DISPLAY_ADAPTER
 
+    // Foreground-switch hook (EVENT_SYSTEM_FOREGROUND). Borderless games do
+    // not touch the display mode, so the only reliable moment to notice that
+    // they hijacked the cursor path is when they gain/lose the foreground.
+    HWINEVENTHOOK m_hWinEventHook = nullptr;
+
     // Tick of the last fix. Triggers within COOLDOWN_MS after it are ignored
     // (they are the aftermath of our own driver reset).
     DWORD m_lastApplyTick = 0;
 
-    // Snapshot of the monitor DEVICE-NAME set (sorted, names only -- geometry
-    // and primary-flag are deliberately excluded because they jitter briefly
-    // during unrelated USB plug/unplug). A fix only runs if the live set
-    // differs from this, i.e. a monitor was really added or removed.
+    // Snapshot of the FULL display topology (sorted device name + geometry +
+    // primary flag). Geometry is required: a game leaving exclusive fullscreen
+    // changes resolution on the SAME monitor, which a name-only set would
+    // miss. Transient jitter is filtered by the deferred WM_TIMER comparison,
+    // not by excluding fields from the snapshot.
     std::wstring m_lastTopology;
 
     static constexpr DWORD COOLDOWN_MS = 4000;

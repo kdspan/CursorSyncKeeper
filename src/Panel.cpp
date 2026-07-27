@@ -34,6 +34,7 @@ static std::wstring DoUninstall() {
     AdminOps::StopDaemon();                          // kill the running daemon
     AdminOps::RemoveScheduledTask();                 // drop the logon auto-start
     CursorFixer::DisableSoftwareMouseRegistry();     // remove HKLM OverlayTestMode
+    CursorFixer::RestoreMouseTrails();               // MouseTrails -1 -> 0
     const std::wstring dir = AdminOps::ReadInstallLocation();
     if (!dir.empty()) AdminOps::RemoveFiles(dir);    // delete the install directory
     AdminOps::RemoveARP();                           // remove the Programs entry
@@ -43,6 +44,7 @@ static std::wstring DoUninstall() {
            L"• 已停止守护进程\n"
            L"• 已移除登录自启计划任务\n"
            L"• 已移除注册表项 (OverlayTestMode)\n"
+           L"• 已还原鼠标轨迹设置 (MouseTrails=0)\n"
            L"• 已删除开始菜单程序项\n"
            L"• 已删除程序文件与日志\n\n"
            L"（卸载过程不执行修复，因此不会出现屏幕黑闪。）";

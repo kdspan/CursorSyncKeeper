@@ -18,6 +18,14 @@
 // ===========================================================================
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    // Single instance: the logon task, the installer's immediate launch and a
+    // manual start must never stack multiple daemons (each extra instance
+    // would double the driver resets -> repeated black flashes).
+    HANDLE hMutex = CreateMutexW(nullptr, TRUE,
+                                 L"Global\\CursorSyncKeeperDaemon");
+    if (!hMutex || GetLastError() == ERROR_ALREADY_EXISTS)
+        return 0;   // another daemon is already running -- quietly exit
+
     HiddenWindow window;
     if (!window.Create()) {
         MessageBoxW(nullptr, L"Failed to create message window.",
@@ -33,5 +41,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     window.MarkApplied();
 
     window.RunMessageLoop();
+    ReleaseMutex(hMutex);
+    CloseHandle(hMutex);
     return 0;
 }

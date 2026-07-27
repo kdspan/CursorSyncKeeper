@@ -1,15 +1,33 @@
 #include "HiddenWindow.h"
 #include "CursorFixer.h"
 #include <windows.h>
-#include <dbt.h>   // DEV_BROADCAST_DEVICEINTERFACE_*, DBT_*
-#include <cstring> // memcmp (GUID equality)
+#include <dbt.h>      // DEV_BROADCAST_DEVICEINTERFACE_*, DBT_*
+#include <shellapi.h> // SHQueryUserNotificationState
+#include <cstring>    // memcmp (GUID equality)
 #include <string>
 #include <vector>
 #include <algorithm>
 
 // Single-shot timer: replace any blocking Sleep() with an event-driven delay.
-#define TIMER_ID_FIX   1
-#define FIX_DELAY_MS   500   // wait for the display driver to finish resetting
+#define TIMER_ID_FIX      1
+#define FIX_DELAY_MS      500   // wait for the display driver to finish resetting
+
+// Sentinel-verification timers (borderless/windowed games -- no display-mode
+// change, so the topology path never fires for them).
+#define TIMER_ID_VERIFY   2     // one-shot, armed by foreground / setting events
+#define VERIFY_DELAY_MS   1200  // let the game finish its own cursor teardown
+#define TIMER_ID_WATCHDOG 3     // periodic last-resort check (one cheap syscall)
+
+// Watchdog period adapts to foreground state. While a likely-fullscreen game
+// owns the foreground we poll FAST (a game can reset MouseTrails within a
+// frame, so 3 s is the longest we tolerate being on the hardware path); on the
+// normal desktop the 15 s tick is plenty and costs essentially nothing.
+#define WATCHDOG_MS_NORMAL 15000
+#define WATCHDOG_MS_FAST   3000
+
+// Window handle the out-of-context WinEvent hook posts to.
+#define WM_APP_FOREGROUND (WM_APP + 1)
+static HWND g_hookWnd = nullptr;
 
 // Device-interface GUIDs for display-class devices. We listen only to these so
 // a USB-C monitor / docking-station display / USB GPU triggers a re-apply,
@@ -21,11 +39,19 @@ static const GUID kDisplayAdapterGuid = {
     0x5b45201d, 0xf2f2, 0x4f3b,
     {0x85, 0xbb, 0x30, 0xff, 0x1f, 0x95, 0x33, 0x99}};  // GUID_DEVINTERFACE_DISPLAY_ADAPTER
 
-// Serialize the current monitor DEVICE-NAME set into a stable string (sorted,
-// order-independent). Deliberately name-only: geometry / primary-flag jitter
-// briefly while the GPU driver re-evaluates outputs during an unrelated USB
-// plug/unplug, but the set of device names only changes when a monitor is
-// REALLY added or removed -- which is exactly the event we care about.
+// Serialize the FULL current display topology (device name + geometry +
+// primary flag) into a stable, sorted, order-independent string.
+//
+// Why full topology and not name-only: a game exiting exclusive fullscreen
+// changes the RESOLUTION of an existing monitor -- the device-name set stays
+// identical, so a name-only compare drops exactly the event this tool exists
+// for. Geometry must be part of the snapshot.
+//
+// Why this is still immune to mobile-HDD jitter: the comparison is DEFERRED
+// to WM_TIMER, FIX_DELAY_MS after the last broadcast. HDD-induced GPU jitter
+// is transient -- by the time the timer fires the topology has returned to
+// the snapshot value, compares equal, and is dropped (zero flash). A game
+// exit or monitor add/remove is a PERSISTENT change and compares different.
 static std::wstring CaptureTopology() {
     std::vector<std::wstring> parts;
     EnumDisplayMonitors(nullptr, nullptr,
@@ -33,8 +59,15 @@ static std::wstring CaptureTopology() {
             auto* p = reinterpret_cast<std::vector<std::wstring>*>(l);
             MONITORINFOEXW mi = {};
             mi.cbSize = sizeof(mi);
-            if (GetMonitorInfoW(hMon, &mi))
-                p->push_back(mi.szDevice);
+            if (GetMonitorInfoW(hMon, &mi)) {
+                wchar_t buf[256];
+                swprintf_s(buf, L"%s[%ld,%ld,%ld,%ld,%lu]",
+                           mi.szDevice,
+                           mi.rcMonitor.left,  mi.rcMonitor.top,
+                           mi.rcMonitor.right, mi.rcMonitor.bottom,
+                           static_cast<unsigned long>(mi.dwFlags & MONITORINFOF_PRIMARY));
+                p->push_back(buf);
+            }
             return TRUE;
         }, reinterpret_cast<LPARAM>(&parts));
     std::sort(parts.begin(), parts.end());
@@ -90,6 +123,23 @@ bool HiddenWindow::Create() {
         // common hot-plug case, so we do not abort startup on failure.
     }
 
+    if (m_hWnd) {
+        // Foreground-switch hook: the trigger for BORDERLESS games, which
+        // reset the mouse setting without ever changing the display mode.
+        // WINEVENT_OUTOFCONTEXT -> callback runs in OUR thread via the message
+        // loop; no DLL injection into other processes.
+        g_hookWnd = m_hWnd;
+        m_hWinEventHook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+            nullptr, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+
+        // Last-resort watchdog: one cheap SPI query per tick, catches games
+        // that reset the cursor silently (no broadcast, no foreground change).
+        // Starts on the NORMAL period; it self-rebases to FAST when a game is
+        // detected (foreground switch or first tick).
+        SetTimer(m_hWnd, TIMER_ID_WATCHDOG, WATCHDOG_MS_NORMAL, nullptr);
+    }
+
     // Snapshot the current display topology so the first real change (not a
     // USB-storage jitter) is what triggers the first fix.
     m_lastTopology = CaptureTopology();
@@ -107,6 +157,12 @@ void HiddenWindow::RunMessageLoop() {
 }
 
 void HiddenWindow::Destroy() {
+    if (m_hWinEventHook) {
+        UnhookWinEvent(m_hWinEventHook);
+        m_hWinEventHook = nullptr;
+        g_hookWnd = nullptr;
+    }
+    if (m_hWnd) KillTimer(m_hWnd, TIMER_ID_WATCHDOG);
     if (m_hDevNotifyAdapter) {
         UnregisterDeviceNotification(m_hDevNotifyAdapter);
         m_hDevNotifyAdapter = nullptr;
@@ -129,17 +185,89 @@ bool HiddenWindow::CooldownElapsed() const {
 bool HiddenWindow::ShouldApplyNow() {
     // Called from the timer, AFTER the FIX_DELAY_MS settle window. Any GPU
     // jitter caused by a mobile-HDD plug/unplug has died down by now, so this
-    // capture reflects the TRUE monitor set -- not a transient phantom state.
-    // (The old design compared at event time, mid-jitter, which is why an HDD
-    // insert flashed once and a removal flashed twice.)
+    // capture reflects the TRUE topology -- not a transient phantom state.
     std::wstring cur = CaptureTopology();
     if (cur == m_lastTopology)
-        return false;   // monitor set unchanged -> no fix, zero flash
+        return false;   // topology unchanged (HDD jitter settled) -> no flash
 
-    // A monitor was really added/removed: snapshot the new set so a second
-    // broadcast of this same physical event compares equal and is dropped.
+    // Persistent change (game exit resolution switch / monitor add/remove):
+    // snapshot the new topology so a second broadcast of this same physical
+    // event compares equal and is dropped.
     m_lastTopology = std::move(cur);
     return true;
+}
+
+// Heuristic for "a borderless / fullscreen GAME likely owns the foreground".
+// SHQueryUserNotificationState does NOT flag borderless-fullscreen games (they
+// are just a normal maximized-borderless window), so we detect them ourselves:
+// a visible, non-toolwindow top-level window whose rect covers the ENTIRE
+// primary monitor and carries no caption / sizing border (WS_POPUP) is the
+// classic borderless-game signature. Exclusive-fullscreen D3D apps are caught
+// too (they also cover the screen), which is fine -- we WANT the fast poll for
+// them as well.
+static bool IsLikelyFullscreenForegroundWindow() {
+    HWND fg = GetForegroundWindow();
+    if (!fg || !IsWindowVisible(fg))
+        return false;
+    if (GetWindowLongPtrW(fg, GWL_EXSTYLE) & WS_EX_TOOLWINDOW)
+        return false;   // taskbar-like / overlay windows are not games
+
+    HMONITOR hm = MonitorFromWindow(fg, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(hm, &mi))
+        return false;
+
+    RECT wr;
+    GetWindowRect(fg, &wr);
+    // Covers the full primary monitor...
+    if (wr.left   <= mi.rcMonitor.left  && wr.top    <= mi.rcMonitor.top &&
+        wr.right  >= mi.rcMonitor.right && wr.bottom >= mi.rcMonitor.bottom) {
+        // ...and has no title bar / border -> borderless-game signature.
+        const LONG_PTR style = GetWindowLongPtrW(fg, GWL_STYLE);
+        if ((style & (WS_CAPTION | WS_THICKFRAME)) == 0)
+            return true;
+    }
+    return false;
+}
+
+void HiddenWindow::VerifyCursorSentinel() {
+    // (1) Keep OverlayTestMode (MPO off) alive without a driver reset. This is
+    //     the driver-level software-cursor guarantee; rewriting the registry is
+    //     cheap and never flashes the screen.
+    CursorFixer::EnsureOverlayTestModeAlive();
+
+    // (2) Runtime sentinel intact -> nothing was hijacked, zero work.
+    if (CursorFixer::TrailsSentinelActive())
+        return;
+
+    // (3) MouseTrails was reset to the hardware path -- by a borderless,
+    //     windowed OR still-running fullscreen game. Re-assert the -1 sentinel
+    //     cheaply (no GPU reset -> NO screen flash). We deliberately NO LONGER
+    //     back off while a game is foreground: that back-off was the very reason
+    //     the secondary monitor lost the software cursor during gaming. Both
+    //     OverlayTestMode and MouseTrails=-1 are invisible, so there is no
+    //     visual artifact and no tug-of-war a game can "win" for long -- the
+    //     watchdog re-asserts within WATCHDOG_MS_FAST seconds.
+    CursorFixer::ReassertSoftwareCursor();
+}
+
+void CALLBACK HiddenWindow::WinEventProc(HWINEVENTHOOK, DWORD event, HWND,
+                                         LONG, LONG, DWORD, DWORD) {
+    // Out-of-context: this runs on our own thread inside the message loop.
+    // Defer via the coalescing one-shot timer instead of acting inline, so a
+    // burst of foreground flips (alt-tab storm) costs one verification.
+    if (event == EVENT_SYSTEM_FOREGROUND && g_hookWnd) {
+        SetTimer(g_hookWnd, TIMER_ID_VERIFY, VERIFY_DELAY_MS, nullptr);
+        // Snap the watchdog period to the new foreground state immediately, so
+        // entering a game starts the FAST poll without waiting up to 15 s for
+        // the next normal tick.
+        KillTimer(g_hookWnd, TIMER_ID_WATCHDOG);
+        SetTimer(g_hookWnd, TIMER_ID_WATCHDOG,
+                 IsLikelyFullscreenForegroundWindow() ? WATCHDOG_MS_FAST
+                                                      : WATCHDOG_MS_NORMAL,
+                 nullptr);
+    }
 }
 
 // ===================== Pure event-driven, no polling =====================
@@ -186,6 +314,22 @@ LRESULT CALLBACK HiddenWindow::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             }
             return 0;
 
+        case WM_SETTINGCHANGE:
+            // A game (or anything) called SystemParametersInfo with
+            // SPIF_SENDCHANGE -- possibly resetting MouseTrails. Coalesce into
+            // one deferred sentinel check. Our own re-assert also broadcasts
+            // this, but then the sentinel is intact and the check is a no-op,
+            // so there is no loop.
+            if (self)
+                SetTimer(hWnd, TIMER_ID_VERIFY, VERIFY_DELAY_MS, nullptr);
+            return 0;
+
+        case WM_APP_FOREGROUND:
+            // (Reserved path if the hook is ever switched to PostMessage.)
+            if (self)
+                SetTimer(hWnd, TIMER_ID_VERIFY, VERIFY_DELAY_MS, nullptr);
+            return 0;
+
         case WM_TIMER:
             if (wParam == TIMER_ID_FIX) {
                 KillTimer(hWnd, TIMER_ID_FIX);
@@ -199,6 +343,22 @@ LRESULT CALLBACK HiddenWindow::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
                     // that Apply() just caused is suppressed (breaks the loop).
                     self->m_lastApplyTick = GetTickCount();
                 }
+            } else if (wParam == TIMER_ID_VERIFY) {
+                // One-shot: armed by foreground switches / setting broadcasts.
+                KillTimer(hWnd, TIMER_ID_VERIFY);
+                VerifyCursorSentinel();
+            } else if (wParam == TIMER_ID_WATCHDOG) {
+                // Periodic sentinel check (silent cursor hijack with no events).
+                // Cheap: one SPI query + a guarded registry read when idle.
+                VerifyCursorSentinel();
+                // Re-base the period so it tracks the foreground state: FAST
+                // while a game is up, NORMAL on the desktop. Self-rescheduling
+                // via KillTimer+SetTimer avoids drift.
+                KillTimer(hWnd, TIMER_ID_WATCHDOG);
+                SetTimer(hWnd, TIMER_ID_WATCHDOG,
+                         IsLikelyFullscreenForegroundWindow() ? WATCHDOG_MS_FAST
+                                                              : WATCHDOG_MS_NORMAL,
+                         nullptr);
             }
             return 0;
 
