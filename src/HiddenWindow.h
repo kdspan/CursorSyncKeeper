@@ -39,11 +39,13 @@ private:
     // compares equal here and is silently dropped -- zero screen flash.
     bool ShouldApplyNow();
 
-    // Sentinel verification for BORDERLESS / windowed games, which never
-    // change the display mode (no WM_DISPLAYCHANGE) yet still reset the mouse
-    // setting back to the hardware path. If MouseTrails != -1 and no
-    // fullscreen app currently owns the foreground, cheaply re-asserts the
-    // software cursor (no GPU reset -> zero screen flash).
+    // Sentinel verification for BORDERLESS / windowed / fullscreen games (and any
+    // other silent hijack), which may reset the mouse setting back to the
+    // hardware path without changing the display mode. Cheaply re-asserts the
+    // software cursor whenever MouseTrails != -1 (no GPU reset -> zero screen
+    // flash). We deliberately do NOT back off while a game owns the foreground --
+    // that back-off was the very reason the secondary monitor lost the software
+    // cursor during gaming.
     static void VerifyCursorSentinel();
 
     // Out-of-context WinEvent callback: any foreground-window switch (game

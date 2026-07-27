@@ -123,17 +123,93 @@ void StopDaemon() {
     RunWait(L"taskkill /f /im CursorSyncKeeper.exe");
 }
 
+namespace {
+// Build the task XML (UTF-16) and persist it next to the install log so
+// "schtasks /create /xml" can import it. Using an XML definition (instead of the
+// schtasks command-line switches) lets us pin every setting explicitly --
+// crucially RunLevel=HighestAvailable + LogonTrigger + (RunOnlyIfLoggedOn left
+// at its default of TRUE) -- which is the only combination that (a) elevates the
+// daemon at logon with NO UAC prompt and (b) keeps it in the interactive session
+// so it can receive WM_DISPLAYCHANGE / foreground events. The command path needs
+// no quoting here because it lives in its own <Command> element (not
+// shell-parsed). NOTE: the Task Scheduler 1.2 schema enforces a STRICT element
+// order inside <Settings>; Enabled/Hidden must precede RunOnlyIfLoggedOn, so we
+// simply omit RunOnlyIfLoggedOn (its default is already TRUE).
+bool WriteTaskXml(const std::wstring& exePath, const std::wstring& xmlPath) {
+    const std::wstring xml =
+        L"<?xml version=\"1.0\" encoding=\"UTF-16\"?>\r\n"
+        L"<Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">\r\n"
+        L"  <RegistrationInfo>\r\n"
+        L"    <Author>CursorSyncKeeper</Author>\r\n"
+        L"    <Description>登录时以管理员权限启动 CursorSyncKeeper 守护进程（无 UAC 弹窗），保持软件鼠标光标。</Description>\r\n"
+        L"  </RegistrationInfo>\r\n"
+        L"  <Triggers>\r\n"
+        L"    <LogonTrigger><Enabled>true</Enabled></LogonTrigger>\r\n"
+        L"  </Triggers>\r\n"
+        L"  <Principals>\r\n"
+        L"    <Principal id=\"Author\">\r\n"
+        L"      <LogonType>InteractiveToken</LogonType>\r\n"
+        L"      <RunLevel>HighestAvailable</RunLevel>\r\n"
+        L"    </Principal>\r\n"
+        L"  </Principals>\r\n"
+        L"  <Settings>\r\n"
+        L"    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\r\n"
+        L"    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\r\n"
+        L"    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\r\n"
+        L"    <AllowStartOnDemand>true</AllowStartOnDemand>\r\n"
+        L"    <Enabled>true</Enabled>\r\n"
+        L"    <Hidden>false</Hidden>\r\n"
+        L"    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>\r\n"
+        L"    <Priority>7</Priority>\r\n"
+        L"  </Settings>\r\n"
+        L"  <Actions Context=\"Author\">\r\n"
+        L"    <Exec>\r\n"
+        L"      <Command>" + exePath + L"</Command>\r\n"
+        L"    </Exec>\r\n"
+        L"  </Actions>\r\n"
+        L"</Task>\r\n";
+
+    BYTE bom[2] = { 0xFF, 0xFE };
+    HANDLE h = CreateFileW(xmlPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD n = 0;
+    WriteFile(h, bom, 2, &n, nullptr);
+    WriteFile(h, xml.c_str(), (DWORD)(xml.size() * sizeof(wchar_t)), &n, nullptr);
+    CloseHandle(h);
+    return true;
+}
+} // anonymous namespace
+
 bool InstallScheduledTask(const std::wstring& exePath) {
-    // Run at every logon, with highest privileges (admin), no UAC prompt.
-    // The /tr value must be a SINGLE-quoted path (schtasks strips the outer
-    // quotes). Do NOT wrap it in an extra pair or schtasks mis-parses the
-    // program path and fails with "parameter is incorrect".
-    std::wstring tr = L"\"" + exePath + L"\"";   // "C:\...\CursorSyncKeeper.exe"
+    // Import the task from an XML definition (see WriteTaskXml for why). This is
+    // far more reliable than the old "schtasks /create /sc onlogon /rl highest"
+    // command line, whose quoting/principal handling silently produced a task
+    // that never actually launched the daemon at logon.
+    CreateDirectoryW(LogDir().c_str(), nullptr);   // ensure XML target dir exists
+    const std::wstring xmlPath = LogDir() + L"\\CursorSyncKeeperTask.xml";
+    if (!WriteTaskXml(exePath, xmlPath)) {
+        Log(L"[InstallScheduledTask] cannot write xml to " + xmlPath);
+        return false;
+    }
     std::wstring cmd = L"schtasks /create /tn \"" + std::wstring(kTaskName) +
-                       L"\" /tr " + tr + L" /sc onlogon /rl highest /f";
+                       L"\" /xml \"" + xmlPath + L"\" /f";
     Log(L"[InstallScheduledTask] " + cmd);
-    const bool ok = RunWait(cmd);
-    Log(L"[InstallScheduledTask] -> " + std::wstring(ok ? L"ok" : L"FAILED"));
+    bool ok = RunWait(cmd);
+    DeleteFileW(xmlPath.c_str());
+    if (!ok) {
+        // Fallback: legacy command line (some environments reject the XML import
+        // for unrelated reasons). Less precise about session/interactivity but
+        // still creates a logon+highest task, so the daemon at least starts.
+        std::wstring tr = L"\"" + exePath + L"\"";
+        std::wstring legacy = L"schtasks /create /tn \"" +
+                              std::wstring(kTaskName) +
+                              L"\" /tr " + tr + L" /sc onlogon /rl highest /f";
+        Log(L"[InstallScheduledTask] XML import failed, fallback: " + legacy);
+        ok = RunWait(legacy);
+        Log(L"[InstallScheduledTask] fallback -> " + std::wstring(ok ? L"ok"
+                                                                     : L"FAILED"));
+    }
     return ok;
 }
 

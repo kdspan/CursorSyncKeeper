@@ -56,7 +56,7 @@
 | 链路 | 触发源 | 动作 | 是否黑闪 |
 |---|---|---|---|
 | **拓扑链** | `WM_DISPLAYCHANGE` / `WM_DEVICECHANGE`（仅显示类设备）/ `WM_POWERBROADCAST`（唤醒） | 延迟 500ms 平复抖动后比对完整拓扑快照，若真有变化调用 `Apply()`（含显卡驱动重置） | 是（真实拓扑变化，可接受） |
-| **哨兵链·事件** | `WM_SETTINGCHANGE`（游戏用 `SPIF_SENDCHANGE` 改写鼠标设置）/ `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`（游戏启动·退出·Alt+Tab） | 延迟 1.2s 后调用 `VerifyCursorSentinel()` | 否 |
+| **哨兵链·事件** | `WM_SETTINGCHANGE`（游戏用 `SPIF_SENDCHANGE` 改写鼠标设置）/ `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`（**仅当全屏 / 无边框游戏**获得前台时） | 延迟 1.2s 后调用 `VerifyCursorSentinel()` | 否 |
 | **哨兵链·看门狗** | 周期定时器（桌面 15s / 游戏前台 3s） | 同上 | 否 |
 
 **哨兵链**专门覆盖「无边框 / 窗口化游戏」——它们**不改分辨率、不插拔设备**，拓扑链永远不触发；但只要哨兵被改回 `0`（硬件路径），看门狗或前台切换事件会立刻重新拉回 `-1`。
@@ -71,11 +71,27 @@
 
 - **事件驱动为主，廉价轮询兜底**：拓扑链纯事件驱动（CPU≈0）；哨兵链事件 + 看门狗兜底，看门狗在桌面仅 15s 一次。
 - **自适应看门狗**：`IsLikelyFullscreenForegroundWindow()` 用几何启发式判定前台是否为无边框 / 全屏游戏（覆盖整块主屏且无标题栏 / 边框的 `WS_POPUP` 窗口）。`SHQueryUserNotificationState` **不会**标记无边框游戏，故用此启发式；命中后看门狗提速到 3s，使顽固游戏最多 3s 内被夺回软件光标。
+- **前台钩子仅在游戏时触发修复**：`EVENT_SYSTEM_FOREGROUND` 钩子**只在** `IsLikelyFullscreenForegroundWindow()` 为真（全屏 / 无边框游戏获得前台）时才调度哨兵校验。普通窗口的前台切换（如 Telegram、浏览器、资源管理器在登录时启动）**从不改写 `MouseTrails`**，因此不再触发"修复"——避免守护进程对从未损坏的光标反复做无意义操作（看门狗仍会兜底任何真实的漂移）。
 - **精准触发显示类设备**：`RegisterDeviceNotification` 只订阅 `GUID_DEVINTERFACE_MONITOR` / `GUID_DEVINTERFACE_DISPLAY_ADAPTER`，USB-C 显示器 / 扩展坞 / USB 显卡插拔才触发；U 盘 / 移动硬盘 / 键鼠不触发。
 - **延时判定防抖动误触**：拓扑事件只（重）置 500ms 定时器，抖动平复后再比对**完整拓扑快照**（设备名 + 坐标矩形 + 主屏标志）。游戏退出改分辨率（同设备名、不同几何）会被识别；移动硬盘引发的 GPU 瞬时抖动因快照已恢复而被静默丢弃——不闪、不重复。
 - **单实例互斥锁**：`WinMain` 中 `Global\CursorSyncKeeperDaemon` 互斥锁，重复启动静默退出，避免多个守护进程叠加驱动重置造成反复黑闪。
 - **自触发抑制**：`Apply()` 自身的 `WM_DISPLAYCHANGE` 由冷却窗口切断「修复 → 触发 → 再修复」自激循环。
-- **开机自启（管理员）**：计划任务（`schtasks`，`onlogon` + 最高权限）注册守护进程，登录即以管理员运行，可随时重写 `HKLM`。
+- **关机前持久化**：守护进程处理 `WM_QUERYENDSESSION` / `WM_ENDSESSION`，在系统保存每用户设置（HKCU）前最后重设一次 `MouseTrails=-1`（无驱动重置、无黑闪）。否则若关机前一刻 `MouseTrails` 被某进程改回 `0`（或守护进程当时未运行），Windows 会把 `0` 持久化，**下次开机鼠标即落在硬件路径**——该处理保证被保存的是软件光标哨兵值。
+- **开机自启（管理员）**：通过**登录触发的计划任务**（`LogonTrigger` + 交互令牌 + 最高权限）注册守护进程，登录即以管理员、在交互会话中运行，可随时重写 `HKLM`。详见下文「计划任务的功能与必要性」。
+
+## 开机自启：计划任务的功能与必要性
+
+守护进程必须在**每次登录 / 重启后自动运行**，否则系统一旦切回硬件光标（驱动重置、游戏退出、睡眠唤醒）就无人修复——这正是本工具存在的意义。因此"开机自启"不是可选项，而是核心功能。
+
+**为什么是计划任务（Task Scheduler），而不是其它常见自启方式：**
+
+- **Run / RunOnce 注册表键**：只能以**当前用户、非提权**启动。本守护进程需要管理员权限（写 `HKLM\...\DWM\OverlayTestMode` 并持续保活 MPO），非提权启动会让这部分静默失败。计划任务可用 `RunLevel=HighestAvailable` 在登录时**无 UAC 弹窗地提权**。
+- **Windows 服务（Session 0）**：服务运行在 Session 0，**无法接收桌面广播消息**（`WM_DISPLAYCHANGE`、前台切换钩子），也就无法感知显示变化去修复光标。守护进程必须活在**交互会话**里。
+- **启动文件夹快捷方式**：同样非提权、且依赖 explorer 加载，可靠性不如计划任务。
+
+因此唯一同时满足"**提权 + 无 UAC + 交互会话**"三条件的内置机制就是**登录触发的计划任务**（`LogonTrigger` + `InteractiveToken` 主体 + `HighestAvailable` 运行级别，且 `RunOnlyIfLoggedOn` 默认 `true` 以保证留在交互会话）。
+
+**实现可靠性**：计划任务通过**导入 XML 定义**（`schtasks /create /xml`）创建，而非易错的 `schtasks /create /sc onlogon /rl highest` 命令行——后者因引号 / 主体解析问题，常出现"任务已创建却从不启动守护进程"的失效情况。XML 方式显式锁定上述全部设置（并遵循 Task Scheduler 1.2 schema 的严格元素顺序），在导入失败时回退到命令行方式，最大化可靠性。
 
 ## 构建
 

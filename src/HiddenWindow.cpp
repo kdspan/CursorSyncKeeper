@@ -258,15 +258,23 @@ void CALLBACK HiddenWindow::WinEventProc(HWINEVENTHOOK, DWORD event, HWND,
     // Defer via the coalescing one-shot timer instead of acting inline, so a
     // burst of foreground flips (alt-tab storm) costs one verification.
     if (event == EVENT_SYSTEM_FOREGROUND && g_hookWnd) {
-        SetTimer(g_hookWnd, TIMER_ID_VERIFY, VERIFY_DELAY_MS, nullptr);
-        // Snap the watchdog period to the new foreground state immediately, so
-        // entering a game starts the FAST poll without waiting up to 15 s for
-        // the next normal tick.
+        // Only a fullscreen / borderless GAME gaining the foreground is a real
+        // risk of having reset the mouse path. Ordinary foreground switches
+        // (Telegram, browser, explorer at logon, ...) never touch MouseTrails,
+        // so we deliberately do NOT schedule a repair for them -- otherwise the
+        // daemon would "repair" on every app switch while the cursor was never
+        // actually broken (and a benign app like Telegram auto-starting at boot
+        // would spuriously appear to trigger a fix). The watchdog (15 s) still
+        // catches any genuine drift.
+        const bool game = IsLikelyFullscreenForegroundWindow();
+        if (game)
+            SetTimer(g_hookWnd, TIMER_ID_VERIFY, VERIFY_DELAY_MS, nullptr);
+        // Keep the watchdog adaptive either way: FAST while a game owns the
+        // foreground, NORMAL otherwise (so we return to the slow poll the
+        // instant the game exits).
         KillTimer(g_hookWnd, TIMER_ID_WATCHDOG);
         SetTimer(g_hookWnd, TIMER_ID_WATCHDOG,
-                 IsLikelyFullscreenForegroundWindow() ? WATCHDOG_MS_FAST
-                                                      : WATCHDOG_MS_NORMAL,
-                 nullptr);
+                 game ? WATCHDOG_MS_FAST : WATCHDOG_MS_NORMAL, nullptr);
     }
 }
 
@@ -329,6 +337,20 @@ LRESULT CALLBACK HiddenWindow::WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARA
             if (self)
                 SetTimer(hWnd, TIMER_ID_VERIFY, VERIFY_DELAY_MS, nullptr);
             return 0;
+
+        case WM_QUERYENDSESSION:
+        case WM_ENDSESSION:
+            // Last chance to force MouseTrails back to -1 (no driver reset, no
+            // flash). Windows saves per-user settings (HKCU\...\MouseTrails) when
+            // it tears down the session, so if the runtime value happened to be 0
+            // at that instant -- a process reset it in the final seconds, or the
+            // daemon was not running -- Windows would persist 0 and the mouse
+            // would boot onto the hardware path. Re-asserting here guarantees the
+            // software-cursor sentinel is what gets saved. Harmless if the
+            // shutdown is later cancelled (mouse simply stays on the software
+            // path).
+            if (self) CursorFixer::ReassertSoftwareCursor();
+            return DefWindowProcW(hWnd, msg, wParam, lParam);
 
         case WM_TIMER:
             if (wParam == TIMER_ID_FIX) {
