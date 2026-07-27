@@ -19,3 +19,6 @@ dist/
 # OS
 Thumbs.db
 Desktop.ini
+# Stray local files (never commit)  
+build_log.txt  
+commit_msg.txt  
