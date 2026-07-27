@@ -14,10 +14,20 @@ add_executable(CursorSyncKeeper WIN32
 # user32  : window / message pump / SystemParametersInfo / SendInput
 # kernel32: GetModuleFileName / registry helpers / CreateProcess
 # advapi32: RegOpenKeyEx / RegSetValueEx (HKLM write) / CheckTokenMembership
-# shell32 : ShellExecuteEx (UAC elevation)
+# shell32 : ShellExecuteEx (UAC elevation) / SHGetFolderPath
 target_link_libraries(CursorSyncKeeper user32 kernel32 advapi32 shell32)
 
+# Installer package (install / reinstall / uninstall GUI + ARP entry).
+add_executable(CursorSyncKeeper_Setup WIN32
+    src/Setup.cpp
+    src/Setup.rc
+)
+target_link_libraries(CursorSyncKeeper_Setup user32 kernel32 advapi32 shell32)
+
 if(MSVC)
+    # Source files contain Chinese UI strings -> compile as UTF-8.
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /utf-8")
+
     # Smaller, release-optimized binary; strip unnecessary stuff
     target_link_options(CursorSyncKeeper PRIVATE /ENTRY:WinMainCRTStartup)
     set_target_properties(CursorSyncKeeper PROPERTIES

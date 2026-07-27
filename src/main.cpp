@@ -98,7 +98,7 @@ static void StartDaemonNow() {
     RunNoWait(L"\"" + GetExePath() + L"\"");
 }
 
-static void Install() {
+static void Install(bool silent) {
     if (!IsElevated()) {
         RelaunchElevated(L"/install");
         return;
@@ -107,24 +107,41 @@ static void Install() {
     const bool okTask = InstallScheduledTask();
     StartDaemonNow();
 
-    MessageBoxW(nullptr,
-        okReg && okTask
-            ? L"CursorSyncKeeper installed.\nSoftware mouse (MPO) enabled and "
-              L"daemon registered to start at logon."
-            : L"Installation completed with warnings.\nCheck that you ran this "
-              L"as Administrator.",
-        L"CursorSyncKeeper", MB_OK | MB_ICONINFORMATION);
+    if (!silent) {
+        MessageBoxW(nullptr,
+            okReg && okTask
+                ? L"CursorSyncKeeper installed.\nSoftware mouse (MPO) enabled and "
+                  L"daemon registered to start at logon."
+                : L"Installation completed with warnings.\nCheck that you ran this "
+                  L"as Administrator.",
+            L"CursorSyncKeeper", MB_OK | MB_ICONINFORMATION);
+    }
 }
 
-static void Uninstall() {
+static void Uninstall(bool silent) {
     if (!IsElevated()) {
         RelaunchElevated(L"/uninstall");
         return;
     }
     RemoveScheduledTask();
     CursorFixer::DisableSoftwareMouseRegistry();
-    MessageBoxW(nullptr, L"CursorSyncKeeper uninstalled.",
-                L"CursorSyncKeeper", MB_OK | MB_ICONINFORMATION);
+    if (!silent) {
+        MessageBoxW(nullptr, L"CursorSyncKeeper uninstalled.",
+                    L"CursorSyncKeeper", MB_OK | MB_ICONINFORMATION);
+    }
+}
+
+static void Fix(bool silent) {
+    if (!IsElevated()) {
+        RelaunchElevated(L"/fix");
+        return;
+    }
+    // Apply the software-mouse fix exactly once (no long-lived process).
+    CursorFixer::Apply();
+    if (!silent) {
+        MessageBoxW(nullptr, L"已执行一次软件鼠标修复。",
+                    L"CursorSyncKeeper", MB_OK | MB_ICONINFORMATION);
+    }
 }
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR lpCmdLine, int) {
@@ -137,8 +154,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR lpCmdLine, int) {
         }
     }
 
-    if (args.find(L"install")   != std::wstring::npos) { Install();   return 0; }
-    if (args.find(L"uninstall") != std::wstring::npos) { Uninstall(); return 0; }
+    const bool silent = (args.find(L"silent") != std::wstring::npos);
+
+    if (args.find(L"install")   != std::wstring::npos) { Install(silent);   return 0; }
+    if (args.find(L"uninstall") != std::wstring::npos) { Uninstall(silent); return 0; }
+    if (args.find(L"fix")       != std::wstring::npos) { Fix(silent);       return 0; }
 
     // Normal run: hidden window + event-driven message pump (the daemon).
     HiddenWindow window;

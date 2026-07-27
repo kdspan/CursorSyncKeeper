@@ -1,0 +1,24 @@
+#include <winres.h>
+#include "resource.h"
+
+// Admin manifest so the installer always runs elevated (no double UAC).
+#define RT_MANIFEST 24
+#define CREATEPROCESS_MANIFEST_RESOURCE_ID 1
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "setup.manifest"
+
+// All visible text is set from C++ (Setup.cpp) at runtime, because rc.exe
+// only parses ANSI and cannot handle the UTF-8 Chinese UI strings.
+IDD_SETUP_DIALOG DIALOGEX 12, 12, 400, 280
+STYLE DS_MODALFRAME | WS_CAPTION | WS_SYSMENU | WS_POPUP
+CAPTION "CursorSyncKeeper Setup"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "", IDC_TITLE, 14, 14, 372, 22
+    LTEXT           "", IDC_HINT, 14, 40, 372, 36
+    PUSHBUTTON      "Install",   IDC_BTN_INSTALL,   24, 92, 104, 34
+    PUSHBUTTON      "Reinstall", IDC_BTN_REINSTALL, 148, 92, 104, 34
+    PUSHBUTTON      "Uninstall", IDC_BTN_UNINSTALL, 272, 92, 104, 34
+    PUSHBUTTON      "Fix Now",   IDC_BTN_FIX,       148, 138, 104, 34
+    LTEXT           "", IDC_STATUS, 14, 186, 372, 56
+    DEFPUSHBUTTON   "Exit", IDC_BTN_EXIT, 160, 244, 80, 28
+END
