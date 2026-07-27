@@ -4,6 +4,11 @@
 // Application icon embedded into the executable (Explorer / taskbar).
 IDI_APP_ICON ICON "appicon.ico"
 
+// Self-contained payloads: the daemon + control panel are embedded as binary
+// resources inside Setup.exe, so the installer is a single standalone file.
+IDR_DAEMON_BIN RCDATA "CursorSyncKeeper.exe"
+IDR_PANEL_BIN  RCDATA "CursorSyncKeeperPanel.exe"
+
 // NOTE: rc.exe is ANSI-only and cannot handle the UTF-8 Chinese UI strings, so
 // every visible label is set from C++ (Setup.cpp) at runtime. The English
 // strings below are just placeholders that get overwritten immediately.

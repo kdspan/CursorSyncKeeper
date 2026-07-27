@@ -42,12 +42,20 @@ cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build . --config Release
 ```
 
-产物：`build\CursorSyncKeeper.exe`（无外部依赖）。
+产物：
+- `build\CursorSyncKeeper.exe` — 守护进程（无外部依赖）
+- `build\CursorSyncKeeperPanel.exe` — 控制面板
+- `build\CursorSyncKeeper_Setup.exe` — **自包含安装向导**：安装包内已内嵌守护进程与控制面板，
+  单独分发 `CursorSyncKeeper_Setup.exe` 即可完成安装，无需附带其他文件。
 
 ## 安装包（安装向导，需管理员）
 
 `CursorSyncKeeper_Setup.exe` 是一个**安装向导**：欢迎 → 选择安装位置 → 确认
 → 完成。可执行**安装**（首次）或**重装**（已存在时刷新并重新注册）。
+
+它是**单文件自包含**的安装程序：守护进程 `CursorSyncKeeper.exe` 与控制面板
+`CursorSyncKeeperPanel.exe` 已作为二进制资源内嵌其中，安装时自解压到目标目录，
+因此**只需分发这一个 exe 即可**，无需附带其他文件。
 
 - **安装 / 重装**：复制文件到所选目录（默认 `Program Files\CursorSyncKeeper`，
   可自定义），**写入 `HKLM` 禁用 MPO（由安装向导自身完成）**，**注册登录自启
@@ -125,7 +133,7 @@ CursorSyncKeeperPanel.exe /uninstall :: 静默卸载（供“程序和功能”�
 
 若安装后光标仍异常：
 1. 查看 `C:\ProgramData\CursorSyncKeeper\install.log` 中是否有
-   `CopyFiles / RunDaemon / WriteARP` 失败的记录。
+   `CopyFiles / InstallScheduledTask / WriteARP / StartMenu` 失败的记录。
 2. 确认 `HKLM\SOFTWARE\Microsoft\Windows\DWM\OverlayTestMode == 5`。
 3. 以管理员运行 `CursorSyncKeeper_Setup.exe` 点击「立即修复」手动触发一次。
 4. 修复会触发约 1 秒屏幕黑闪（显卡驱动重置），属正常现象。

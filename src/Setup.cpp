@@ -29,23 +29,49 @@
 
 // ---- helpers -------------------------------------------------------------
 
-static std::wstring ExeDir() {
-    wchar_t path[MAX_PATH] = {0};
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    std::wstring s(path);
-    const size_t pos = s.find_last_of(L'\\');
-    if (pos != std::wstring::npos) s = s.substr(0, pos);
-    return s;
-}
-
 static std::wstring GetInstallDirDefault() {
     wchar_t buf[MAX_PATH] = {0};
     SHGetFolderPathW(nullptr, CSIDL_PROGRAM_FILES, nullptr, 0, buf);
     return std::wstring(buf) + L"\\CursorSyncKeeper";
 }
 
+// Extract a binary resource (RT_RCDATA) into a file. This is how Setup ships
+// the daemon + control panel without needing those files on disk next to it.
+static bool ExtractResource(WORD resId, const std::wstring& outPath) {
+    HMODULE hMod = GetModuleHandleW(nullptr);
+    // RT_RCDATA is declared as LPSTR; widen it for the *W API.
+    HRSRC hRes = FindResourceW(hMod, MAKEINTRESOURCEW(resId),
+                               reinterpret_cast<LPCWSTR>(RT_RCDATA));
+    if (!hRes) {
+        AdminOps::Log(L"[Extract] FindResource failed for " + std::to_wstring(resId));
+        return false;
+    }
+    const HGLOBAL hGlob = LoadResource(hMod, hRes);
+    if (!hGlob) return false;
+    const DWORD size = SizeofResource(hMod, hRes);
+    LPVOID p = LockResource(hGlob);
+    if (!p || size == 0) return false;
+
+    HANDLE hFile = CreateFileW(outPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        AdminOps::Log(L"[Extract] CreateFile failed for " + outPath +
+                      L" (err " + std::to_wstring(GetLastError()) + L")");
+        return false;
+    }
+    DWORD written = 0;
+    const BOOL ok = WriteFile(hFile, p, size, &written, nullptr);
+    CloseHandle(hFile);
+    if (!ok || written != size) {
+        AdminOps::Log(L"[Extract] WriteFile short for " + outPath +
+                      L" (" + std::to_wstring(written) + L"/" +
+                      std::to_wstring(size) + L")");
+        return false;
+    }
+    return true;
+}
+
 static bool CopyFiles(const std::wstring& dir) {
-    const std::wstring src = ExeDir();
     if (!CreateDirectoryW(dir.c_str(), nullptr)) {
         const DWORD e = GetLastError();
         if (e != ERROR_ALREADY_EXISTS) {
@@ -55,19 +81,25 @@ static bool CopyFiles(const std::wstring& dir) {
         }
     }
     bool ok = true;
-    // Ship the daemon + control panel + this wizard into the install dir.
-    const wchar_t* names[] = {
-        L"CursorSyncKeeper.exe",
-        L"CursorSyncKeeperPanel.exe",
-        L"CursorSyncKeeper_Setup.exe"
-    };
-    for (const wchar_t* name : names) {
-        if (!CopyFileW((src + L"\\" + name).c_str(),
-                       (dir + L"\\" + name).c_str(), FALSE)) {
-            AdminOps::Log(L"[CopyFiles] " + std::wstring(name) + L" failed (err " +
-                          std::to_wstring(GetLastError()) + L")");
-            ok = false;
-        }
+    // Self-extract the daemon + control panel from resources embedded in this
+    // Setup.exe, so the installer is a single standalone file with no external
+    // dependencies at install time.
+    if (!ExtractResource(IDR_DAEMON_BIN, dir + L"\\CursorSyncKeeper.exe")) {
+        AdminOps::Log(L"[CopyFiles] daemon extract failed");
+        ok = false;
+    }
+    if (!ExtractResource(IDR_PANEL_BIN, dir + L"\\CursorSyncKeeperPanel.exe")) {
+        AdminOps::Log(L"[CopyFiles] panel extract failed");
+        ok = false;
+    }
+    // Also drop a copy of this Setup.exe into the install dir (for parity /
+    // reinstall convenience). It is read from the running process itself.
+    wchar_t self[MAX_PATH] = {0};
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    if (!CopyFileW(self, (dir + L"\\CursorSyncKeeper_Setup.exe").c_str(), FALSE)) {
+        AdminOps::Log(L"[CopyFiles] setup self-copy failed (err " +
+                      std::to_wstring(GetLastError()) + L")");
+        ok = false;
     }
     AdminOps::Log(L"[CopyFiles] -> " + std::wstring(ok ? L"ok" : L"FAILED"));
     return ok;

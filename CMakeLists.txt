@@ -44,6 +44,12 @@ add_executable(CursorSyncKeeper_Setup WIN32
 target_link_libraries(CursorSyncKeeper_Setup user32 kernel32 advapi32 shell32 ole32)
 target_link_options(CursorSyncKeeper_Setup PRIVATE /MANIFEST:NO)
 
+# The Setup wizard embeds CursorSyncKeeper.exe and CursorSyncKeeperPanel.exe as
+# binary resources (self-extracting installer). Make sure those two targets are
+# fully linked BEFORE Setup.rc is compiled, so rc.exe can find them in the build
+# directory at resource-compile time.
+add_dependencies(CursorSyncKeeper_Setup CursorSyncKeeper CursorSyncKeeperPanel)
+
 # Control Panel program: single fix + uninstall (a separate program from both
 # the daemon and the installer wizard). It also uses AdminOps for teardown and
 # CursorFixer for the one-shot fix, and embeds a requireAdministrator manifest.

@@ -3,6 +3,12 @@
 // ---- Shared application icon (embedded into all three programs) ----
 #define IDI_APP_ICON     100
 
+// ---- Self-extracting payloads (embedded inside CursorSyncKeeper_Setup.exe) ----
+// So a single Setup.exe is enough to install everything; it does NOT need the
+// daemon / control panel files to be present alongside it.
+#define IDR_DAEMON_BIN   400
+#define IDR_PANEL_BIN    401
+
 // ---- Wizard installer (CursorSyncKeeper_Setup.exe) ----
 #define IDD_WIZARD       200
 #define IDC_WIZ_TITLE    201
