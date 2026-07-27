@@ -1,6 +1,8 @@
 #include <windows.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <string>
+#include <fstream>
 #include "resource.h"
 
 // ===========================================================================
@@ -21,6 +23,51 @@ static const wchar_t* kUninstallKey =
 static const wchar_t* kTaskName = L"CursorSyncKeeper";
 
 // ---- helpers -------------------------------------------------------------
+
+static bool IsElevated() {
+    SID_IDENTIFIER_AUTHORITY ntAuth = SECURITY_NT_AUTHORITY;
+    PSID adminGroup = nullptr;
+    AllocateAndInitializeSid(&ntAuth, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                             DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
+                             &adminGroup);
+    BOOL isMember = FALSE;
+    if (adminGroup) {
+        CheckTokenMembership(nullptr, adminGroup, &isMember);
+        FreeSid(adminGroup);
+    }
+    return isMember != FALSE;
+}
+
+// Re-launch the current executable elevated (UAC prompt) with the given args.
+// Used as a safety net in case the embedded manifest did not elevate us.
+static void RelaunchElevated(const std::wstring& params) {
+    wchar_t path[MAX_PATH] = {0};
+    GetModuleFileNameW(nullptr, path, MAX_PATH);
+    SHELLEXECUTEINFOW sei = { sizeof(sei) };
+    sei.lpVerb = L"runas";
+    sei.lpFile = path;
+    sei.lpParameters = params.empty() ? nullptr : params.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    ShellExecuteExW(&sei);
+}
+
+// Logs install operations to %ProgramData%\CursorSyncKeeper\install.log.
+// (Per Windows conventions, runtime data goes to ProgramData, not Program Files.)
+static std::wstring LogDir() {
+    wchar_t buf[MAX_PATH] = {0};
+    SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, 0, buf);
+    return std::wstring(buf) + L"\\CursorSyncKeeper";
+}
+
+static void Log(const std::wstring& msg) {
+    std::wstring dir = LogDir();
+    CreateDirectoryW(dir.c_str(), nullptr);
+    std::wstring file = dir + L"\\install.log";
+    std::wstring line = msg + L"\r\n";
+    std::ofstream f(file, std::ios::app | std::ios::binary);
+    if (f) f.write(reinterpret_cast<const char*>(line.c_str()),
+                  static_cast<std::streamsize>(line.size() * sizeof(wchar_t)));
+}
 
 static std::wstring ExeDir() {
     wchar_t path[MAX_PATH] = {0};
@@ -55,25 +102,46 @@ static bool RunWait(const std::wstring& cmd) {
 
 // Ask the installed daemon to enable/disable software mouse (it writes HKLM
 // and registers/removes the scheduled task). It inherits our elevation, so no
-// extra UAC prompt.
-static void RunDaemon(const std::wstring& verb, bool silent) {
+// extra UAC prompt. Returns true if the daemon exited with code 0.
+static bool RunDaemon(const std::wstring& verb, bool silent) {
     const std::wstring exe = InstallDir() + L"\\CursorSyncKeeper.exe";
+    if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        Log(L"[RunDaemon] daemon missing at " + exe);
+        return false;
+    }
     const std::wstring params = L"/" + verb + (silent ? L" /silent" : L"");
-    RunWait(L"\"" + exe + L"\" " + params);
+    const bool ok = RunWait(L"\"" + exe + L"\" " + params);
+    Log(L"[RunDaemon] " + verb + (ok ? L" -> ok" : L" -> FAILED"));
+    return ok;
 }
 
 static void StopDaemon() {
     RunWait(L"taskkill /f /im CursorSyncKeeper.exe");
 }
 
-static void CopyFiles() {
+static bool CopyFiles() {
     const std::wstring src = ExeDir();
     const std::wstring dst = InstallDir();
-    CreateDirectoryW(dst.c_str(), nullptr);
-    CopyFileW((src + L"\\CursorSyncKeeper.exe").c_str(),
-              (dst + L"\\CursorSyncKeeper.exe").c_str(), FALSE);
-    CopyFileW((src + L"\\CursorSyncKeeper_Setup.exe").c_str(),
-              (dst + L"\\CursorSyncKeeper_Setup.exe").c_str(), FALSE);
+    if (!CreateDirectoryW(dst.c_str(), nullptr)) {
+        const DWORD e = GetLastError();
+        if (e != ERROR_ALREADY_EXISTS) {
+            Log(L"[CopyFiles] cannot create dir " + dst + L" (err " + std::to_wstring(e) + L")");
+            return false;
+        }
+    }
+    bool ok = true;
+    if (!CopyFileW((src + L"\\CursorSyncKeeper.exe").c_str(),
+                   (dst + L"\\CursorSyncKeeper.exe").c_str(), FALSE)) {
+        Log(L"[CopyFiles] CursorSyncKeeper.exe failed (err " + std::to_wstring(GetLastError()) + L")");
+        ok = false;
+    }
+    if (!CopyFileW((src + L"\\CursorSyncKeeper_Setup.exe").c_str(),
+                   (dst + L"\\CursorSyncKeeper_Setup.exe").c_str(), FALSE)) {
+        Log(L"[CopyFiles] CursorSyncKeeper_Setup.exe failed (err " + std::to_wstring(GetLastError()) + L")");
+        ok = false;
+    }
+    Log(L"[CopyFiles] -> " + std::wstring(ok ? L"ok" : L"FAILED"));
+    return ok;
 }
 
 static void RemoveFiles() {
@@ -81,14 +149,17 @@ static void RemoveFiles() {
     RunWait(L"cmd /c rmdir /s /q \"" + dst + L"\"");
 }
 
-static void WriteARP() {
+static bool WriteARP() {
     const std::wstring dst = InstallDir();
     HKEY hKey = nullptr;
     DWORD disp = 0;
     const LONG res = RegCreateKeyExW(
         HKEY_LOCAL_MACHINE, kUninstallKey, 0, nullptr, REG_OPTION_NON_VOLATILE,
         KEY_SET_VALUE | KEY_WOW64_64KEY, nullptr, &hKey, &disp);
-    if (res != ERROR_SUCCESS) return;
+    if (res != ERROR_SUCCESS) {
+        Log(L"[WriteARP] RegCreateKeyEx failed (err " + std::to_wstring(res) + L")");
+        return false;
+    }
 
     const std::wstring display = L"CursorSyncKeeper";
     RegSetValueExW(hKey, L"DisplayName", 0, REG_SZ,
@@ -119,6 +190,8 @@ static void WriteARP() {
     RegSetValueExW(hKey, L"NoRepair", 0, REG_DWORD,
                    reinterpret_cast<const BYTE*>(&noModify), sizeof(DWORD));
     RegCloseKey(hKey);
+    Log(L"[WriteARP] ok");
+    return true;
 }
 
 static void RemoveARP() {
@@ -141,45 +214,73 @@ static bool IsInstalled() {
 
 // ---- operations ----------------------------------------------------------
 
-static void SetStatus(HWND hwnd, const wchar_t* msg) {
-    SetDlgItemTextW(hwnd, IDC_STATUS, msg);
+static void SetStatus(HWND hwnd, const std::wstring& msg) {
+    SetDlgItemTextW(hwnd, IDC_STATUS, msg.c_str());
 }
 
 static void DoInstall(HWND hwnd) {
-    CopyFiles();
-    RunDaemon(L"install", true);
-    RunDaemon(L"fix", true);     // apply the software-mouse fix once, immediately
-    WriteARP();
-    SetStatus(hwnd,
-        L"安装完成。\n"
-        L"• 软件鼠标 (MPO) 已启用 (HKLM\\...\\DWM\\OverlayTestMode=5)\n"
-        L"• 已立即执行一次修复（驱动重置，约 1 秒屏幕黑闪属正常）\n"
-        L"• 计划任务已注册，登录后自动运行\n"
-        L"• 守护进程已启动 (事件驱动, CPU≈0%)");
+    bool ok = true;
+    std::wstring detail;
+    if (!CopyFiles()) {
+        detail += L"• 复制文件到 Program Files 失败（权限不足？）\n";
+        ok = false;
+    }
+    if (!RunDaemon(L"install", true)) {
+        detail += L"• 注册软件鼠标 (HKLM) / 计划任务失败\n";
+        ok = false;
+    }
+    if (!RunDaemon(L"fix", true)) {
+        detail += L"• 立即修复执行失败\n";
+        ok = false;
+    }
+    if (!WriteARP()) {
+        detail += L"• 写入“添加/删除程序”信息失败\n";
+        ok = false;
+    }
+
+    if (ok && IsInstalled()) {
+        SetStatus(hwnd,
+            L"安装完成。\n"
+            L"• 已安装到 " + InstallDir() + L"\n"
+            L"• 软件鼠标 (MPO) 已启用 (OverlayTestMode=5)\n"
+            L"• 已立即执行一次修复（约 1 秒屏幕黑闪属正常）\n"
+            L"• 计划任务已注册，登录后自动运行\n"
+            L"• 守护进程已在后台常驻 (事件驱动, CPU≈0%)");
+    } else {
+        SetStatus(hwnd,
+            L"安装未完全成功，请查看日志：\n" + LogDir() + L"\\install.log\n" + detail);
+    }
 }
 
 static void DoReinstall(HWND hwnd) {
+    bool ok = true;
+    std::wstring detail;
     StopDaemon();
-    CopyFiles();                 // refresh binaries from the package
-    RunDaemon(L"install", true); // re-register HKLM + task (idempotent)
-    RunDaemon(L"fix", true);     // re-apply the fix once after refresh
-    WriteARP();
-    SetStatus(hwnd,
-        L"重装完成。\n"
-        L"已用当前安装包刷新程序文件、重新注册，并立即执行一次修复。");
+    if (!CopyFiles()) { detail += L"• 刷新文件失败\n"; ok = false; }
+    if (!RunDaemon(L"install", true)) { detail += L"• 重新注册失败\n"; ok = false; }
+    if (!RunDaemon(L"fix", true)) { detail += L"• 重新修复失败\n"; ok = false; }
+    if (!WriteARP()) { detail += L"• 更新卸载信息失败\n"; ok = false; }
+
+    SetStatus(hwnd, ok
+        ? L"重装完成。\n已刷新文件、重新注册，并立即执行一次修复。"
+        : L"重装未完成，请查看日志：\n" + LogDir() + L"\\install.log\n" + detail);
 }
 
 static void DoFix(HWND hwnd) {
     if (!IsInstalled()) {
         SetStatus(hwnd,
-            L"尚未安装，无法执行修复。\n请先点击「安装」。");
+            L"尚未安装，无法执行修复。\n请先点击「安装」（或「重装」）。");
         return;
     }
-    RunDaemon(L"fix", true);     // single-shot software-mouse fix
-    SetStatus(hwnd,
-        L"已执行一次软件鼠标修复。\n"
-        L"如光标问题依旧，可再次点击「立即修复」。\n"
-        L"（修复会触发约 1 秒的屏幕黑闪，这是显卡驱动重置的正常表现）");
+    if (RunDaemon(L"fix", true)) {
+        SetStatus(hwnd,
+            L"已执行一次软件鼠标修复。\n"
+            L"如光标问题依旧，可再次点击「立即修复」。\n"
+            L"（修复会触发约 1 秒的屏幕黑闪，这是显卡驱动重置的正常表现）");
+    } else {
+        SetStatus(hwnd,
+            L"修复执行失败，请查看日志：\n" + LogDir() + L"\\install.log");
+    }
 }
 
 static void DoUninstall(HWND hwnd) {
@@ -187,6 +288,8 @@ static void DoUninstall(HWND hwnd) {
     StopDaemon();                  // kill the running daemon
     RemoveFiles();                 // delete %ProgramFiles%\CursorSyncKeeper
     RemoveARP();                   // remove the Programs-and-Features entry
+    // Clean up our ProgramData log directory.
+    RemoveDirectoryW(LogDir().c_str());
     SetStatus(hwnd, L"卸载完成。所有文件、计划任务与注册表项均已移除。");
 }
 
@@ -195,6 +298,7 @@ static void DoUninstallSilent() {
     RunDaemon(L"uninstall", true);
     RemoveFiles();
     RemoveARP();
+    RemoveDirectoryW(LogDir().c_str());
 }
 
 // ---- dialog --------------------------------------------------------------
@@ -243,6 +347,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR lpCmdLine, int) {
             args.resize(len - 1);
             MultiByteToWideChar(CP_ACP, 0, lpCmdLine, -1, &args[0], len);
         }
+    }
+
+    // The installer must be elevated to write Program Files + HKLM. The embedded
+    // manifest normally handles this; if it did not (e.g. overridden), re-launch
+    // ourselves elevated via UAC as a safety net.
+    if (!IsElevated()) {
+        RelaunchElevated(args);
+        return 0;
     }
 
     // Control-Panel "Uninstall" launches us with /uninstall -> do it quietly.

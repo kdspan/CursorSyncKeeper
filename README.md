@@ -87,3 +87,23 @@ CursorSyncKeeper.exe /fix         :: 单次执行软件鼠标修复后退出（�
 
 显示模式/驱动变化是确定事件（广播消息）。监听这些消息比周期扫描更高效、更省电，
 守护进程以管理员计划任务常驻即可满足“轻量 + 可重写 HKLM”的诉求。
+
+## 文件与存储位置（符合 Windows 规范）
+
+- 程序文件：`C:\Program Files\CursorSyncKeeper\`（二进制 + 自带安装包）
+- 运行日志：`C:\ProgramData\CursorSyncKeeper\install.log`（安装/修复/卸载操作记录）
+- 系统修复键值：`HKLM\SOFTWARE\Microsoft\Windows\DWM\OverlayTestMode = 5`
+- 自启方式：计划任务 `CursorSyncKeeper`（`onlogon` + 最高权限）
+- 卸载入口：控制面板“程序和功能”中的 `CursorSyncKeeper` 项
+
+> 安装包自带 `requireAdministrator` 清单并会在未提权时自动以 UAC 重新启动，
+> 因此写入 Program Files 与 HKLM 不会因权限不足而静默失败。
+
+## 故障排查
+
+若安装后光标仍异常：
+1. 查看 `C:\ProgramData\CursorSyncKeeper\install.log` 中是否有
+   `CopyFiles / RunDaemon / WriteARP` 失败的记录。
+2. 确认 `HKLM\SOFTWARE\Microsoft\Windows\DWM\OverlayTestMode == 5`。
+3. 以管理员运行 `CursorSyncKeeper_Setup.exe` 点击「立即修复」手动触发一次。
+4. 修复会触发约 1 秒屏幕黑闪（显卡驱动重置），属正常现象。

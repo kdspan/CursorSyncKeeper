@@ -1,10 +1,9 @@
 #include <winres.h>
 #include "resource.h"
 
-// Admin manifest so the installer always runs elevated (no double UAC).
-#define RT_MANIFEST 24
-#define CREATEPROCESS_MANIFEST_RESOURCE_ID 1
-CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "setup.manifest"
+// NOTE: the requireAdministrator manifest is embedded by CMake via mt.exe in a
+// post-build step (not here), because CMake's default asInvoker manifest would
+// otherwise silently override a manifest placed in this .rc.
 
 // All visible text is set from C++ (Setup.cpp) at runtime, because rc.exe
 // only parses ANSI and cannot handle the UTF-8 Chinese UI strings.
