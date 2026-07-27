@@ -50,6 +50,25 @@ target_link_options(CursorSyncKeeper_Setup PRIVATE /MANIFEST:NO)
 # directory at resource-compile time.
 add_dependencies(CursorSyncKeeper_Setup CursorSyncKeeper CursorSyncKeeperPanel)
 
+# CRITICAL: rc.exe dependency scanning does NOT track RCDATA payload files, so
+# without this an incremental build reuses the stale Setup.res and ships an
+# installer that embeds an OUTDATED daemon/panel (exactly the bug where a fixed
+# daemon never reached the machine). Declaring the two exes as OBJECT_DEPENDS
+# forces Setup.rc to recompile -- and Setup to relink -- whenever either
+# payload binary changes. This makes a plain `cmake --build build` always
+# produce a complete, up-to-date installer with no external packaging script.
+set_source_files_properties(src/Setup.rc PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_BINARY_DIR}/CursorSyncKeeper.exe;${CMAKE_CURRENT_BINARY_DIR}/CursorSyncKeeperPanel.exe")
+
+# Publish the finished installer as the single distributable artifact:
+# <project>/dist/CursorSyncKeeper_Setup.exe (refreshed on every build).
+add_custom_command(TARGET CursorSyncKeeper_Setup POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_SOURCE_DIR}/dist"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:CursorSyncKeeper_Setup>"
+            "${CMAKE_CURRENT_SOURCE_DIR}/dist/CursorSyncKeeper_Setup.exe"
+    COMMENT "Publishing installer to dist/CursorSyncKeeper_Setup.exe")
+
 # Control Panel program: single fix + uninstall (a separate program from both
 # the daemon and the installer wizard). It also uses AdminOps for teardown and
 # CursorFixer for the one-shot fix, and embeds a requireAdministrator manifest.

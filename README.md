@@ -28,6 +28,15 @@ Windows 默认使用 **硬件鼠标光标**（GPU 的 Multiplane Overlay，MPO�
 - **纯事件驱动，无轮询**：程序 99.9% 时间阻塞在 `GetMessage`，CPU 占用为 0。
 - **精准触发**：仅 `WM_DISPLAYCHANGE` / `WM_DEVICECHANGE` / `WM_POWERBROADCAST`
   时动作，用一次性 `SetTimer(500ms)` 延迟到驱动完成重置后再修复。
+- **只认显示类设备**：通过 `RegisterDeviceNotification` 精准订阅
+  `GUID_DEVINTERFACE_MONITOR` / `GUID_DEVINTERFACE_DISPLAY_ADAPTER` 设备接口，
+  USB-C 显示器 / 扩展坞视频输出插拔会触发，U 盘 / 移动硬盘 / 键鼠插拔不触发。
+- **延时判定防抖动误触**：事件到达时只做冷却检查并（重置）启动 500ms 定时器，
+  同一物理事件的多次广播天然合并为一次判定；定时器到期（抖动平复）后，比对
+  **显示器设备名集合**快照（刻意忽略分辨率/坐标等易抖字段），集合未变则静默
+  放弃——移动硬盘插拔引发的 GPU 瞬时抖动不会再造成屏幕闪烁，也不会重复触发。
+- **自触发抑制**：修复本身会广播 `WM_DISPLAYCHANGE`，用 4 秒冷却窗口切断
+  「修复 → 触发 → 再修复」的自激循环。
 - **开机自启（管理员）**：通过计划任务（`schtasks`，`onlogon` + 最高权限）
   注册守护进程，登录即自动以管理员权限运行，可随时重写 `HKLM`。
 
@@ -45,8 +54,12 @@ cmake --build . --config Release
 产物：
 - `build\CursorSyncKeeper.exe` — 守护进程（无外部依赖）
 - `build\CursorSyncKeeperPanel.exe` — 控制面板
-- `build\CursorSyncKeeper_Setup.exe` — **自包含安装向导**：安装包内已内嵌守护进程与控制面板，
-  单独分发 `CursorSyncKeeper_Setup.exe` 即可完成安装，无需附带其他文件。
+- `dist\CursorSyncKeeper_Setup.exe` — **自包含安装向导（最终分发物）**：安装包内
+  已内嵌守护进程与控制面板，单独分发这一个 exe 即可完成安装。
+
+> 打包完全由 CMake 闭环完成，**无需任何外部打包脚本**：`Setup.rc` 对两个内嵌
+> exe 声明了 `OBJECT_DEPENDS` 显式依赖，守护进程/面板任一重编译，安装包都会
+> 自动重新嵌入并重新链接，再自动发布到 `dist\`，保证安装包内永远是最新二进制。
 
 ## 安装包（安装向导，需管理员）
 
